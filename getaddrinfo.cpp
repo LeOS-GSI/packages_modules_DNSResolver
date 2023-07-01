@@ -3,6 +3,7 @@
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
+ * Copyright (C) 2021 ECORP
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -319,6 +320,66 @@ int validateHints(const addrinfo* _Nonnull hints) {
 
 }  // namespace
 
+int shouldBlockRequest(const char* hostname, int uid){
+        int sock, len;
+	struct sockaddr_un server;
+	char message[1000], server_reply[2000];
+
+	//Create socket
+	sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (sock == -1)	{
+		LOG(DEBUG) << "Socket: Could not create socket";
+	}
+	LOG(DEBUG) << "Socket: created";
+
+        char const* name = "foundation.e.advancedprivacy";
+        int nameLen = strlen(name);
+        server.sun_path[0] = '\0'; /* abstract namespace */
+        strncpy(server.sun_path + 1, name, nameLen);
+        server.sun_family = AF_UNIX;
+        len = 1 + nameLen + offsetof(struct sockaddr_un, sun_path);
+
+	//Connect to remote server
+	if (connect(sock, (struct sockaddr *)&server, len) < 0) {
+		LOG(DEBUG) << "Socket: connect failed. Error";
+                close(sock);
+		return 0;
+	}
+
+	LOG(DEBUG) << "Socket: Connected";
+
+	//keep communicating with server
+	snprintf(message, sizeof(message), "%s,%d", hostname, uid);
+
+	//Send some data
+	if(send(sock, message, strlen(message), 0) < 0) {
+		LOG(DEBUG) << "Socket: Send failed";
+		close(sock);
+		return 0;
+	}
+	shutdown(sock, SHUT_WR);
+	//Receive a reply from the server
+	if (recv(sock, server_reply, 2000, 0) < 0) {
+		LOG(DEBUG) << "Socket:recv failed";
+		close(sock);
+		return 0;
+	}
+
+	LOG(DEBUG) << "Socket: Server reply : " << server_reply;
+	if (strncmp(server_reply, "pass", 4) == 0) {
+		LOG(DEBUG) << "Socket: Shouldn't block";
+		close(sock);
+		return 0;
+	} else {
+	        LOG(DEBUG) << "Socket: should block";
+		close(sock);
+		return 1;
+	}
+	close(sock);
+	return 0;
+
+}
+
 int android_getaddrinfofornetcontext(const char* hostname, const char* servname,
                                      const addrinfo* hints, const android_net_context* netcontext,
                                      addrinfo** res, NetworkDnsEventReported* event) {
@@ -411,6 +472,12 @@ int resolv_getaddrinfo(const char* _Nonnull hostname, const char* servname, cons
                        NetworkDnsEventReported* _Nonnull event) {
     if (hostname == nullptr && servname == nullptr) return EAI_NONAME;
     if (hostname == nullptr) return EAI_NODATA;
+
+    if (shouldBlockRequest(hostname, netcontext->uid)) {
+	char* dest = new char[10];
+        strncpy(dest, "localhost", strlen("localhost"));
+        hostname = dest;
+    }
 
     // servname is allowed to be nullptr
     // hints is allowed to be nullptr
